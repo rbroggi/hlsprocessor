@@ -26,132 +26,117 @@ func main() {
 		return
 	}
 
-	// Create a new request
-	req, err := http.NewRequest("GET", masterManifestURL.String(), nil)
+	// Fetch and parse the master manifest
+	masterPlaylist, err := fetchAndParseMasterManifest(masterManifestURL, headers)
 	if err != nil {
-		fmt.Printf("Error creating request: %v\n", err)
+		fmt.Println(err)
 		return
 	}
 
-	// Add headers to the request
+	// Pick the minimal bandwidth variant
+	variant := pickMinimalBandwidthVariant(masterPlaylist)
+
+	// Fetch and parse the media playlist
+	mediaPlaylistURL, err := masterManifestURL.Parse(variant.URI)
+	if err != nil {
+		fmt.Printf("Error parsing media playlist URL: %v\n", err)
+		return
+	}
+
+	mediaPlaylist, err := fetchAndParseMediaPlaylist(mediaPlaylistURL, headers)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	// Download and handle the segments
+	for _, segment := range mediaPlaylist.Segments {
+		if segment == nil {
+			continue
+		}
+		if err := downloadAndHandleSegment(mediaPlaylistURL, segment, headers); err != nil {
+			fmt.Println(err)
+			return
+		}
+	}
+}
+
+func fetchAndParseMasterManifest(url *url.URL, headers map[string]string) (*m3u8.MasterPlaylist, error) {
+	resp, err := makeHTTPRequest("GET", url.String(), headers)
+	if err != nil {
+		return nil, fmt.Errorf("Error making request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	playlist, listType, err := m3u8.DecodeFrom(resp.Body, true)
+	if err != nil {
+		return nil, fmt.Errorf("Error parsing manifest: %v", err)
+	}
+	if listType != m3u8.MASTER {
+		return nil, fmt.Errorf("Not a master playlist")
+	}
+
+	return playlist.(*m3u8.MasterPlaylist), nil
+}
+
+func fetchAndParseMediaPlaylist(url *url.URL, headers map[string]string) (*m3u8.MediaPlaylist, error) {
+	resp, err := makeHTTPRequest("GET", url.String(), headers)
+	if err != nil {
+		return nil, fmt.Errorf("Error making request to download media playlist: %v", err)
+	}
+	defer resp.Body.Close()
+
+	playlist, listType, err := m3u8.DecodeFrom(resp.Body, true)
+	if err != nil {
+		return nil, fmt.Errorf("Error parsing media playlist: %v", err)
+	}
+	if listType != m3u8.MEDIA {
+		return nil, fmt.Errorf("Not a media playlist")
+	}
+
+	return playlist.(*m3u8.MediaPlaylist), nil
+}
+
+func makeHTTPRequest(method, url string, headers map[string]string) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("Error creating request: %v", err)
+	}
+
 	for key, value := range headers {
 		req.Header.Add(key, value)
 	}
 
-	// Perform the request
 	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Println("Error making request:", err)
-		return
-	}
-	defer resp.Body.Close()
+	return client.Do(req)
+}
 
-	// parse the master manifest
-	playlist, listType, err := m3u8.DecodeFrom(resp.Body, true)
-	if err != nil {
-		fmt.Println("Error parsing manifest:", err)
-		return
-	}
-	if listType != m3u8.MASTER {
-		fmt.Println("Not a master playlist")
-		return
-	}
-
-	// no variant streams
-	masterPlaylist := playlist.(*m3u8.MasterPlaylist)
-	if len(masterPlaylist.Variants) == 0 {
-		fmt.Println("No variant streams")
-		return
-	}
-
-	// pick the minimal bandwidth variant
+func pickMinimalBandwidthVariant(masterPlaylist *m3u8.MasterPlaylist) *m3u8.Variant {
 	variant := masterPlaylist.Variants[0]
 	for _, v := range masterPlaylist.Variants {
 		if v.Bandwidth < variant.Bandwidth {
 			variant = v
 		}
 	}
+	return variant
+}
 
-	mediaPlaylistURL, err := masterManifestURL.Parse(variant.URI)
+func downloadAndHandleSegment(baseURL *url.URL, segment *m3u8.MediaSegment, headers map[string]string) error {
+	segmentURL, err := baseURL.Parse(segment.URI)
 	if err != nil {
-		fmt.Println("Error parsing media playlist URL:", err)
-		return
+		return fmt.Errorf("Error parsing segment %d URL %s: %v", segment.SeqId, segment.URI, err)
 	}
 
-	// Get the variant stream
-	req, err = http.NewRequest("GET", mediaPlaylistURL.String(), nil)
+	resp, err := makeHTTPRequest("GET", segmentURL.String(), headers)
 	if err != nil {
-		fmt.Println("Error creating media playlist request:", err)
-		return
-	}
-
-	// Add headers to the request
-	for key, value := range headers {
-		req.Header.Add(key, value)
-	}
-
-	// Perform the request
-	resp, err = client.Do(req)
-	if err != nil {
-		fmt.Println("Error making request to download media playlist:", err)
-		return
+		return fmt.Errorf("Error making request to download segment: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// parse the media playlist
-	playlist, listType, err = m3u8.DecodeFrom(resp.Body, true)
-	if err != nil {
-		fmt.Println("Error parsing media playlist:", err)
-		return
-	}
-
-	if listType != m3u8.MEDIA {
-		fmt.Println("Not a media playlist")
-		return
-	}
-
-	mediaPlaylist := playlist.(*m3u8.MediaPlaylist)
-	fmt.Printf("mediaPlaylist: %v\n", mediaPlaylist)
-
-	// download the segments and handle them
-	segments := mediaPlaylist.Segments
-	for _, segment := range segments {
-		segmentURL, err := mediaPlaylistURL.Parse(segment.URI)
-		if err != nil {
-			fmt.Println("Error parsing segment %d URL %s: %v", segment.SeqId, segment.URI, err)
-			return
-		}
-		// download the segment
-		req, err = http.NewRequest("GET", segmentURL.String(), nil)
-		if err != nil {
-			fmt.Println("Error creating segment request:", err)
-			return
-		}
-
-		// Add headers to the request
-		for key, value := range headers {
-			req.Header.Add(key, value)
-		}
-
-		// Perform the request
-		resp, err = client.Do(req)
-		if err != nil {
-			fmt.Println("Error making request to download segment:", err)
-			return
-		}
-
-		// handle the segment
-		err = handleSegment(context.Background(), segment, resp.Body)
-		if err != nil {
-			fmt.Println("Error handling segment:", err)
-			return
-		}
-
-	}
+	return handleSegment(context.Background(), segment, resp.Body)
 }
 
-func handleSegment(background context.Context, segment *m3u8.MediaSegment, body io.ReadCloser) error {
+func handleSegment(ctx context.Context, segment *m3u8.MediaSegment, body io.ReadCloser) error {
 	defer body.Close()
 	bytes, err := io.ReadAll(body)
 	if err != nil {
