@@ -1,9 +1,9 @@
-# hlsdownloader
+# hlsprocessor
 
-Binary that takes as an input an HLS master manifest and downloads all the segments of one of it's streams.
+Binary that takes as an input an HLS master manifest and processes all the segments of one of its media playlists.
 
 ## Usage
 
 ```bash
-hlsdownloader <master-manifest> 
+hlsprocessor <master-manifest> 
 ```

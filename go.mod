@@ -1,4 +1,4 @@
-module hlsdownloader
+module hlsprocessor
 
 go 1.23.1
 
